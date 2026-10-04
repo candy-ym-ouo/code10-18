@@ -38,6 +38,12 @@ export const METRIC_TYPES = [
 ] as const;
 export const EVIDENCE_REQUIREMENTS = ["NONE", "AUDIO", "SELF_REVIEW", "AUDIO_AND_SELF_REVIEW"] as const;
 export const GOAL_STATUSES = ["OPEN", "IN_PROGRESS", "ACHIEVED", "MISSED", "CANCELLED"] as const;
+export const INSTRUMENT_STATUSES = ["ACTIVE", "MERGED", "RETIRED", "DELETING", "DELETE_FAILED"] as const;
+export const MAINTENANCE_TYPES = ["STRING_CHANGE", "CLEANING", "SETUP", "REPAIR", "INSPECTION", "OTHER"] as const;
+export const REPAIR_STATUSES = ["OPEN", "IN_PROGRESS", "DONE", "CANCELLED"] as const;
+export const ATTACHMENT_STATUSES = ["PENDING_UPLOAD", "READY", "DELETING"] as const;
+export const MAINTENANCE_ALERT_TYPES = ["STRING_AGE", "ENVIRONMENT", "REPAIR_OVERDUE"] as const;
+export const ALERT_SEVERITIES = ["INFO", "WARNING", "CRITICAL"] as const;
 
 const requiredText = (label: string, max: number) =>
   z.string().trim().min(1, `${label}不能为空`).max(max, `${label}不能超过 ${max} 个字符`);
@@ -201,6 +207,119 @@ export const createExportSchema = z.object({
   to: z.coerce.date().optional(),
 });
 
+const humiditySchema = (label: string) =>
+  z.coerce.number().min(0, `${label}不能低于 0%`).max(100, `${label}不能高于 100%`).optional().nullable();
+const temperatureSchema = (label: string) =>
+  z.coerce.number().min(-40, `${label}不能低于 -40℃`).max(60, `${label}不能高于 60℃`).optional().nullable();
+
+export const instrumentCreateSchema = z
+  .object({
+    name: requiredText("设备名称", 80),
+    category: requiredText("乐器类别", 60),
+    brand: optionalText(80, "品牌"),
+    model: optionalText(80, "型号"),
+    serialNo: optionalText(80, "序列号"),
+    acquiredAt: z.coerce.date().optional().nullable(),
+    stringChangedAt: z.coerce.date().optional().nullable(),
+    stringMaxAgeDays: z.coerce.number().int().min(7, "弦龄预警阈值至少 7 天").max(730, "弦龄预警阈值不能超过 730 天").default(90),
+    humidityMinPct: humiditySchema("湿度下限"),
+    humidityMaxPct: humiditySchema("湿度上限"),
+    temperatureMinC: temperatureSchema("温度下限"),
+    temperatureMaxC: temperatureSchema("温度上限"),
+    notes: optionalText(2000, "备注"),
+  })
+  .refine((value) => value.humidityMinPct == null || value.humidityMaxPct == null || value.humidityMinPct <= value.humidityMaxPct, {
+    path: ["humidityMaxPct"],
+    message: "湿度上限不能低于下限",
+  })
+  .refine((value) => value.temperatureMinC == null || value.temperatureMaxC == null || value.temperatureMinC <= value.temperatureMaxC, {
+    path: ["temperatureMaxC"],
+    message: "温度上限不能低于下限",
+  });
+export const instrumentUpdateSchema = z.object({
+  name: requiredText("设备名称", 80).optional(),
+  category: requiredText("乐器类别", 60).optional(),
+  brand: optionalText(80, "品牌"),
+  model: optionalText(80, "型号"),
+  serialNo: optionalText(80, "序列号"),
+  acquiredAt: z.coerce.date().optional().nullable(),
+  stringChangedAt: z.coerce.date().optional().nullable(),
+  stringMaxAgeDays: z.coerce.number().int().min(7).max(730).optional(),
+  humidityMinPct: humiditySchema("湿度下限"),
+  humidityMaxPct: humiditySchema("湿度上限"),
+  temperatureMinC: temperatureSchema("温度下限"),
+  temperatureMaxC: temperatureSchema("温度上限"),
+  notes: optionalText(2000, "备注"),
+  version: z.coerce.number().int().nonnegative(),
+});
+export const instrumentListQuerySchema = z.object({
+  status: z.enum(["ACTIVE", "MERGED", "RETIRED", "ALL"]).default("ACTIVE"),
+  category: z.string().trim().max(60).optional(),
+  q: z.string().trim().max(120).optional(),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+export const instrumentMergeSchema = z.object({
+  targetId: z.string().uuid(),
+});
+
+export const maintenanceCreateSchema = z.object({
+  type: z.enum(MAINTENANCE_TYPES),
+  performedAt: z.coerce.date(),
+  stringBrand: optionalText(120, "琴弦型号"),
+  cost: z.coerce.number().min(0).max(1_000_000).optional().nullable(),
+  vendor: optionalText(120, "店家或技师"),
+  notes: optionalText(2000, "保养备注"),
+});
+export const maintenanceUpdateSchema = maintenanceCreateSchema.partial();
+export const maintenanceListQuerySchema = z.object({
+  type: z.enum(MAINTENANCE_TYPES).optional(),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+});
+
+export const environmentReadingCreateSchema = z.object({
+  temperatureC: z.coerce.number().min(-40, "温度不能低于 -40℃").max(60, "温度不能高于 60℃"),
+  humidityPct: z.coerce.number().min(0, "湿度不能低于 0%").max(100, "湿度不能高于 100%"),
+  recordedAt: z.coerce.date(),
+  source: optionalText(60, "来源"),
+  note: optionalText(500, "备注"),
+});
+export const environmentListQuerySchema = z.object({
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
+export const repairCreateSchema = z.object({
+  title: requiredText("维修事项", 160),
+  description: optionalText(2000, "问题描述"),
+  dueDate: z.coerce.date().optional().nullable(),
+  cost: z.coerce.number().min(0).max(1_000_000).optional().nullable(),
+});
+export const repairUpdateSchema = z.object({
+  title: requiredText("维修事项", 160).optional(),
+  description: optionalText(2000, "问题描述"),
+  status: z.enum(REPAIR_STATUSES).optional(),
+  dueDate: z.coerce.date().optional().nullable(),
+  cost: z.coerce.number().min(0).max(1_000_000).optional().nullable(),
+  version: z.coerce.number().int().nonnegative(),
+});
+export const repairListQuerySchema = z.object({
+  status: z.enum(REPAIR_STATUSES).optional(),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+export const attachmentUploadSchema = z.object({
+  originalName: z.string().trim().min(1).max(255),
+  mimeType: z.string().trim().min(1).max(100),
+  sizeBytes: z.coerce.bigint().positive(),
+  sha256: z.string().regex(/^[a-fA-F0-9]{64}$/, "SHA-256 摘要格式不正确"),
+  maintenanceId: z.string().uuid().optional().nullable(),
+});
+
 export const idSchema = z.string().uuid();
 
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
@@ -210,6 +329,12 @@ export type GoalCategory = (typeof GOAL_CATEGORIES)[number];
 export type MetricType = (typeof METRIC_TYPES)[number];
 export type GoalStatus = (typeof GOAL_STATUSES)[number];
 export type EvidenceRequirement = (typeof EVIDENCE_REQUIREMENTS)[number];
+export type InstrumentStatus = (typeof INSTRUMENT_STATUSES)[number];
+export type MaintenanceType = (typeof MAINTENANCE_TYPES)[number];
+export type RepairStatus = (typeof REPAIR_STATUSES)[number];
+export type AttachmentStatus = (typeof ATTACHMENT_STATUSES)[number];
+export type MaintenanceAlertType = (typeof MAINTENANCE_ALERT_TYPES)[number];
+export type AlertSeverity = (typeof ALERT_SEVERITIES)[number];
 
 export interface ApiErrorBody {
   error: {
@@ -279,4 +404,130 @@ export function describeMissingReview(input: {
     missing.push("已有未关闭目标时，本次至少记录一次目标进度");
   }
   return missing;
+}
+
+const DAY_MS = 86_400_000;
+
+export function calculateStringAgeDays(stringChangedAt: Date | null | undefined, now: Date): number | null {
+  if (!stringChangedAt) return null;
+  const ageMs = now.getTime() - stringChangedAt.getTime();
+  if (!Number.isFinite(ageMs) || ageMs < 0) return null;
+  return Math.floor(ageMs / DAY_MS);
+}
+
+export function evaluateStringAge(ageDays: number | null, maxAgeDays: number): { severity: AlertSeverity; message: string } | null {
+  if (ageDays == null) return { severity: "INFO", message: "尚未记录换弦时间，无法评估弦龄" };
+  if (maxAgeDays <= 0) return null;
+  if (ageDays > maxAgeDays * 1.5) {
+    return { severity: "CRITICAL", message: `琴弦已使用 ${ageDays} 天，严重超过建议更换周期 ${maxAgeDays} 天` };
+  }
+  if (ageDays > maxAgeDays) {
+    return { severity: "WARNING", message: `琴弦已使用 ${ageDays} 天，超过建议更换周期 ${maxAgeDays} 天` };
+  }
+  return null;
+}
+
+export interface EnvironmentRange {
+  humidityMinPct: number | null;
+  humidityMaxPct: number | null;
+  temperatureMinC: number | null;
+  temperatureMaxC: number | null;
+}
+
+export interface EnvironmentSnapshot {
+  temperatureC: number;
+  humidityPct: number;
+  recordedAt: Date;
+}
+
+export function evaluateEnvironmentReading(
+  reading: EnvironmentSnapshot | null,
+  range: EnvironmentRange,
+): { severity: AlertSeverity; message: string; breaches: string[] } | null {
+  if (!reading) return null;
+  const breaches: string[] = [];
+  let worst = 0;
+  const check = (value: number, min: number | null, max: number | null, label: string, unit: string) => {
+    if (min != null && value < min) {
+      breaches.push(`${label} ${value}${unit} 低于安全下限 ${min}${unit}`);
+      worst = Math.max(worst, min - value);
+    }
+    if (max != null && value > max) {
+      breaches.push(`${label} ${value}${unit} 高于安全上限 ${max}${unit}`);
+      worst = Math.max(worst, value - max);
+    }
+  };
+  check(reading.humidityPct, range.humidityMinPct, range.humidityMaxPct, "湿度", "%");
+  check(reading.temperatureC, range.temperatureMinC, range.temperatureMaxC, "温度", "℃");
+  if (!breaches.length) return null;
+  return {
+    severity: worst > 5 ? "CRITICAL" : "WARNING",
+    message: breaches.join("；"),
+    breaches,
+  };
+}
+
+export interface MaintenanceAlertResult {
+  type: MaintenanceAlertType;
+  severity: AlertSeverity;
+  message: string;
+  detail: Record<string, unknown>;
+}
+
+export function buildMaintenanceAlerts(input: {
+  now: Date;
+  stringChangedAt: Date | null;
+  stringMaxAgeDays: number;
+  latestEnvironment: EnvironmentSnapshot | null;
+  environmentRange: EnvironmentRange;
+  overdueRepairCount: number;
+  oldestOverdueRepairDays: number | null;
+}): MaintenanceAlertResult[] {
+  const alerts: MaintenanceAlertResult[] = [];
+  const ageDays = calculateStringAgeDays(input.stringChangedAt, input.now);
+  const stringAlert = evaluateStringAge(ageDays, input.stringMaxAgeDays);
+  if (stringAlert) {
+    alerts.push({
+      type: "STRING_AGE",
+      severity: stringAlert.severity,
+      message: stringAlert.message,
+      detail: { ageDays, maxAgeDays: input.stringMaxAgeDays },
+    });
+  }
+  const environmentAlert = evaluateEnvironmentReading(input.latestEnvironment, input.environmentRange);
+  if (environmentAlert) {
+    alerts.push({
+      type: "ENVIRONMENT",
+      severity: environmentAlert.severity,
+      message: environmentAlert.message,
+      detail: {
+        breaches: environmentAlert.breaches,
+        recordedAt: input.latestEnvironment?.recordedAt.toISOString() ?? null,
+      },
+    });
+  }
+  if (input.overdueRepairCount > 0) {
+    const days = input.oldestOverdueRepairDays ?? 0;
+    alerts.push({
+      type: "REPAIR_OVERDUE",
+      severity: days > 7 ? "CRITICAL" : "WARNING",
+      message: `有 ${input.overdueRepairCount} 项维修事项已逾期，最早逾期 ${days} 天`,
+      detail: { overdueCount: input.overdueRepairCount, oldestOverdueDays: days },
+    });
+  }
+  return alerts;
+}
+
+export function canMergeInstruments(
+  source: { status: InstrumentStatus; mergedIntoId: string | null },
+  targetId: string,
+): { ok: true; alreadyMerged: boolean } | { ok: false; code: string; message: string } {
+  if (source.status === "MERGED") {
+    if (source.mergedIntoId === targetId) return { ok: true, alreadyMerged: true };
+    return { ok: false, code: "INSTRUMENT_ALREADY_MERGED", message: "设备已归并到其他设备，不能重复归并" };
+  }
+  if (source.status === "DELETING" || source.status === "DELETE_FAILED") {
+    return { ok: false, code: "INVALID_INSTRUMENT_STATE", message: "设备正在删除中，不能归并" };
+  }
+  return { ok: true, alreadyMerged: false };
 }

@@ -53,6 +53,20 @@ export async function enqueueExport(exportId: string): Promise<void> {
   );
 }
 
+export async function enqueueInstrumentCleanup(instrumentId: string): Promise<void> {
+  await getMediaQueue().add(
+    "cleanup-instrument",
+    { instrumentId },
+    {
+      jobId: `cleanup-instrument:${instrumentId}`,
+      attempts: 5,
+      backoff: { type: "exponential", delay: 5000 },
+      removeOnComplete: 100,
+      removeOnFail: 500,
+    },
+  );
+}
+
 export async function closeQueue(): Promise<void> {
   if (queue) {
     await queue.close();

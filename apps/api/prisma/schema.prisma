@@ -81,6 +81,48 @@ enum GoalStatus {
   CANCELLED
 }
 
+enum InstrumentStatus {
+  ACTIVE
+  MERGED
+  RETIRED
+  DELETING
+  DELETE_FAILED
+}
+
+enum MaintenanceType {
+  STRING_CHANGE
+  CLEANING
+  SETUP
+  REPAIR
+  INSPECTION
+  OTHER
+}
+
+enum RepairStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+  CANCELLED
+}
+
+enum AttachmentStatus {
+  PENDING_UPLOAD
+  READY
+  DELETING
+}
+
+enum MaintenanceAlertType {
+  STRING_AGE
+  ENVIRONMENT
+  REPAIR_OVERDUE
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
 model User {
   id                String           @id @default(uuid()) @db.Uuid
   email             String           @unique @db.VarChar(254)
@@ -100,6 +142,12 @@ model User {
   goalProgresses    GoalProgress[]
   auditLogs         AuditLog[]
   dataExports       DataExport[]
+  instruments       Instrument[]
+  maintenanceRecords MaintenanceRecord[]
+  environmentReadings EnvironmentReading[]
+  repairItems       RepairItem[]
+  maintenanceAttachments MaintenanceAttachment[]
+  maintenanceAlerts MaintenanceAlert[]
 
   @@map("users")
 }
@@ -310,4 +358,143 @@ model AuditLog {
   @@index([userId, createdAt(sort: Desc)])
   @@index([action, createdAt(sort: Desc)])
   @@map("audit_logs")
+}
+
+model Instrument {
+  id               String           @id @default(uuid()) @db.Uuid
+  userId           String           @map("user_id") @db.Uuid
+  name             String           @db.VarChar(80)
+  category         String           @db.VarChar(60)
+  brand            String?          @db.VarChar(80)
+  model            String?          @db.VarChar(80)
+  serialNo         String?          @map("serial_no") @db.VarChar(80)
+  acquiredAt       DateTime?        @map("acquired_at") @db.Date
+  stringChangedAt  DateTime?        @map("string_changed_at") @db.Timestamptz(6)
+  stringMaxAgeDays Int              @default(90) @map("string_max_age_days")
+  humidityMinPct   Decimal?         @map("humidity_min_pct") @db.Decimal(5, 2)
+  humidityMaxPct   Decimal?         @map("humidity_max_pct") @db.Decimal(5, 2)
+  temperatureMinC  Decimal?         @map("temperature_min_c") @db.Decimal(5, 2)
+  temperatureMaxC  Decimal?         @map("temperature_max_c") @db.Decimal(5, 2)
+  notes            String?
+  status           InstrumentStatus @default(ACTIVE)
+  mergedIntoId     String?          @map("merged_into_id") @db.Uuid
+  mergedAt         DateTime?        @map("merged_at") @db.Timestamptz(6)
+  version          Int              @default(0)
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mergedInto       Instrument?      @relation("InstrumentMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
+  mergedFrom       Instrument[]     @relation("InstrumentMerge")
+  maintenances     MaintenanceRecord[]
+  environments     EnvironmentReading[]
+  repairs          RepairItem[]
+  attachments      MaintenanceAttachment[]
+  alerts           MaintenanceAlert[]
+
+  @@index([userId, status])
+  @@index([mergedIntoId])
+  @@map("instruments")
+}
+
+model MaintenanceRecord {
+  id           String          @id @default(uuid()) @db.Uuid
+  userId       String          @map("user_id") @db.Uuid
+  instrumentId String          @map("instrument_id") @db.Uuid
+  type         MaintenanceType
+  performedAt  DateTime        @map("performed_at") @db.Timestamptz(6)
+  stringBrand  String?         @map("string_brand") @db.VarChar(120)
+  cost         Decimal?        @db.Decimal(10, 2)
+  vendor       String?         @db.VarChar(120)
+  notes        String?
+  createdAt    DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  instrument   Instrument      @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  attachments  MaintenanceAttachment[]
+
+  @@index([instrumentId, performedAt(sort: Desc)])
+  @@index([userId, type])
+  @@map("maintenance_records")
+}
+
+model EnvironmentReading {
+  id           String     @id @default(uuid()) @db.Uuid
+  userId       String     @map("user_id") @db.Uuid
+  instrumentId String     @map("instrument_id") @db.Uuid
+  temperatureC Decimal    @map("temperature_c") @db.Decimal(5, 2)
+  humidityPct  Decimal    @map("humidity_pct") @db.Decimal(5, 2)
+  source       String?    @db.VarChar(60)
+  note         String?
+  recordedAt   DateTime   @map("recorded_at") @db.Timestamptz(6)
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  instrument   Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, recordedAt])
+  @@index([instrumentId, recordedAt(sort: Desc)])
+  @@map("environment_readings")
+}
+
+model RepairItem {
+  id           String       @id @default(uuid()) @db.Uuid
+  userId       String       @map("user_id") @db.Uuid
+  instrumentId String       @map("instrument_id") @db.Uuid
+  title        String       @db.VarChar(160)
+  description  String?
+  status       RepairStatus @default(OPEN)
+  dueDate      DateTime?    @map("due_date") @db.Date
+  resolvedAt   DateTime?    @map("resolved_at") @db.Timestamptz(6)
+  cost         Decimal?     @db.Decimal(10, 2)
+  version      Int          @default(0)
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  instrument   Instrument   @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@index([instrumentId, status])
+  @@index([userId, status, dueDate])
+  @@map("repair_items")
+}
+
+model MaintenanceAttachment {
+  id            String              @id @default(uuid()) @db.Uuid
+  userId        String              @map("user_id") @db.Uuid
+  instrumentId  String              @map("instrument_id") @db.Uuid
+  maintenanceId String?             @map("maintenance_id") @db.Uuid
+  status        AttachmentStatus    @default(PENDING_UPLOAD)
+  objectKey     String              @map("object_key")
+  originalName  String              @map("original_name") @db.VarChar(255)
+  mimeType      String              @map("mime_type") @db.VarChar(100)
+  sizeBytes     BigInt              @map("size_bytes")
+  sha256        String              @db.Char(64)
+  expiresAt     DateTime?           @map("expires_at") @db.Timestamptz(6)
+  createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  instrument    Instrument          @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  maintenance   MaintenanceRecord?  @relation(fields: [maintenanceId], references: [id], onDelete: SetNull)
+
+  @@index([instrumentId])
+  @@index([objectKey])
+  @@map("maintenance_attachments")
+}
+
+model MaintenanceAlert {
+  id           String              @id @default(uuid()) @db.Uuid
+  userId       String              @map("user_id") @db.Uuid
+  instrumentId String              @map("instrument_id") @db.Uuid
+  type         MaintenanceAlertType
+  severity     AlertSeverity
+  message      String              @db.VarChar(300)
+  detail       Json?
+  detectedAt   DateTime            @default(now()) @map("detected_at") @db.Timestamptz(6)
+  resolvedAt   DateTime?           @map("resolved_at") @db.Timestamptz(6)
+  createdAt    DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  instrument   Instrument          @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, type])
+  @@index([userId, resolvedAt])
+  @@map("maintenance_alerts")
 }

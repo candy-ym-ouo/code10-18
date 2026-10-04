@@ -66,3 +66,39 @@ export const goalStatusLabels = {
   MISSED: "已逾期",
   CANCELLED: "已取消",
 } as const;
+
+export const instrumentStatusLabels = {
+  ACTIVE: "在用",
+  MERGED: "已归并",
+  RETIRED: "已退役",
+  DELETING: "删除中",
+  DELETE_FAILED: "删除失败",
+} as const;
+
+export const maintenanceTypeLabels = {
+  STRING_CHANGE: "换弦",
+  CLEANING: "清洁保养",
+  SETUP: "调校",
+  REPAIR: "维修",
+  INSPECTION: "检查",
+  OTHER: "其他",
+} as const;
+
+export const repairStatusLabels = {
+  OPEN: "待处理",
+  IN_PROGRESS: "处理中",
+  DONE: "已完成",
+  CANCELLED: "已取消",
+} as const;
+
+export const alertSeverityLabels = {
+  INFO: "提示",
+  WARNING: "警告",
+  CRITICAL: "严重",
+} as const;
+
+export const alertTypeLabels = {
+  STRING_AGE: "弦龄",
+  ENVIRONMENT: "环境",
+  REPAIR_OVERDUE: "维修逾期",
+} as const;

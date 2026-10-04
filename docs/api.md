@@ -114,6 +114,43 @@ Refresh Cookie 路径为 `/api/v1/auth`，生产环境在 HTTPS 下自动使用 
 
 完成复盘请求会原子写入复盘、目标、进度并更新练习状态。任一步失败时全部回滚，返回 `REVIEW_INCOMPLETE` 且 `details` 为缺失项数组。
 
+## 乐器保养
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/instruments` | 设备列表，含未解除预警和各维度计数 |
+| POST | `/instruments` | 登记设备（弦龄阈值、环境安全范围） |
+| GET | `/instruments/:id` | 详情：最近保养、环境、维修、附件与实时预警 |
+| PATCH | `/instruments/:id` | 乐观锁更新；请求必须带 `version` |
+| POST | `/instruments/:id/merge` | 把设备全部历史归并到 `targetId`，幂等 |
+| DELETE | `/instruments/:id` | 标记 `DELETING` 并投递后台清理任务 |
+| GET | `/instruments/:id/alerts` | 实时计算的预警列表 |
+| GET/POST | `/instruments/:id/maintenances` | 保养记录列表/新增 |
+| PATCH/DELETE | `/maintenances/:id` | 编辑/删除保养记录 |
+| GET/POST | `/instruments/:id/environments` | 环境读数列表/上报 |
+| GET/POST | `/instruments/:id/repairs` | 维修事项列表/新增 |
+| PATCH | `/repairs/:id` | 乐观锁更新维修事项 |
+| POST | `/repairs/:id/complete` | 标记维修完成，重复调用安全 |
+| POST | `/instruments/:id/attachments/uploads` | 创建附件上传会话（图片/PDF ≤ 20 MB） |
+| POST | `/attachments/:id/complete-upload` | 校验对象大小/SHA-256 后置为 `READY` |
+| GET | `/attachments/:id/download-url` | 短时私有下载地址 |
+| DELETE | `/attachments/:id` | 先清理对象存储，再删除记录 |
+| GET | `/maintenance-alerts` | 当前用户全部未解除预警 |
+
+归并语义：
+
+- 归并在单个事务中把源设备的保养记录、环境读数、维修事项和附件**转移**（而非复制）到目标设备，历史只有一份，不会产生重复。
+- 环境读数按 `(instrumentId, recordedAt)` 唯一，与目标冲突的源读数在转移前删除。
+- 源设备变为 `MERGED` 只读；对同一 `targetId` 重复归并返回 `alreadyMerged: true`，归并到不同目标返回 `409 INSTRUMENT_ALREADY_MERGED`。
+
+预警与幂等：
+
+- 预警类型为 `STRING_AGE`（弦龄超阈值，1.5 倍升级严重）、`ENVIRONMENT`（最新读数超出安全范围，偏离超过 5 个单位升级严重）、`REPAIR_OVERDUE`（维修逾期超过 7 天升级严重）。
+- 预警由共享纯函数计算：API 变更后即时同步，Worker 每小时全量扫描并 upsert 到 `maintenance_alerts`（`(instrumentId, type)` 唯一），任务可安全重跑。
+- 上报环境读数以 `(instrumentId, recordedAt)` 为幂等键 upsert，重复上报同一时刻不会产生重复历史。
+- 新增 `STRING_CHANGE` 保养记录时，同事务把 `stringChangedAt` 前移（不回退），弦龄自动重新计算。
+- 设备删除任务 `cleanup-instrument` 使用确定性 jobId，先删附件对象再删数据库行，失败标记 `DELETE_FAILED` 可重试。
+
 ## 统计与导出
 
 | 方法 | 路径 | 说明 |

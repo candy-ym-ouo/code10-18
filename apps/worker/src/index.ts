@@ -5,6 +5,8 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Worker } from "bullmq";
 import { Redis } from "ioredis";
+import { Prisma } from "@prisma/client";
+import { buildMaintenanceAlerts } from "@practice/contracts";
 import { getConfig } from "./config/env.js";
 import { prisma } from "./lib/prisma.js";
 import { deleteObject, getObjectStream, putObject } from "./lib/s3.js";
@@ -125,11 +127,111 @@ async function scanOverdueGoals() {
   if (result.count > 0) log("info", { count: result.count }, "overdue goals marked missed");
 }
 
+/**
+ * 设备删除清理：先把附件对象从对象存储移除，再删除数据库行。
+ * 对象删除与行删除都可重复执行，任务重跑时已清理的部分会被安全跳过。
+ */
+async function cleanupInstrument(instrumentId: string) {
+  const instrument = await prisma.instrument.findUnique({
+    where: { id: instrumentId },
+    include: { attachments: { select: { objectKey: true } } },
+  });
+  if (!instrument) return;
+  try {
+    const keys = new Set(instrument.attachments.map((attachment) => attachment.objectKey));
+    for (const objectKey of keys) {
+      await deleteObject(objectKey);
+    }
+    await prisma.instrument.delete({ where: { id: instrumentId } });
+    log("info", { instrumentId, objects: keys.size }, "instrument cleanup completed");
+  } catch (error) {
+    await prisma.instrument.updateMany({ where: { id: instrumentId }, data: { status: "DELETE_FAILED" } });
+    throw error;
+  }
+}
+
+/**
+ * 保养预警扫描：对每台在用设备重算预警并 upsert 到 maintenance_alerts，
+ * 已解除的预警标记 resolvedAt。同一设备同一类型只有一行，重复扫描结果一致。
+ */
+async function scanMaintenanceAlerts() {
+  const now = new Date();
+  const startOfToday = new Date(now);
+  startOfToday.setUTCHours(0, 0, 0, 0);
+  const instruments = await prisma.instrument.findMany({
+    where: { status: "ACTIVE" },
+    include: {
+      environments: { orderBy: { recordedAt: "desc" }, take: 1 },
+      repairs: { where: { status: { in: ["OPEN", "IN_PROGRESS"] }, dueDate: { lt: startOfToday } } },
+    },
+  });
+  let active = 0;
+  for (const instrument of instruments) {
+    const latest = instrument.environments[0] ?? null;
+    const oldestOverdueDays = instrument.repairs.length
+      ? Math.max(
+          ...instrument.repairs.map((repair) =>
+            repair.dueDate ? Math.floor((startOfToday.getTime() - repair.dueDate.getTime()) / 86_400_000) : 0,
+          ),
+        )
+      : null;
+    const alerts = buildMaintenanceAlerts({
+      now,
+      stringChangedAt: instrument.stringChangedAt,
+      stringMaxAgeDays: instrument.stringMaxAgeDays,
+      latestEnvironment: latest
+        ? { temperatureC: Number(latest.temperatureC), humidityPct: Number(latest.humidityPct), recordedAt: latest.recordedAt }
+        : null,
+      environmentRange: {
+        humidityMinPct: instrument.humidityMinPct == null ? null : Number(instrument.humidityMinPct),
+        humidityMaxPct: instrument.humidityMaxPct == null ? null : Number(instrument.humidityMaxPct),
+        temperatureMinC: instrument.temperatureMinC == null ? null : Number(instrument.temperatureMinC),
+        temperatureMaxC: instrument.temperatureMaxC == null ? null : Number(instrument.temperatureMaxC),
+      },
+      overdueRepairCount: instrument.repairs.length,
+      oldestOverdueRepairDays: oldestOverdueDays,
+    });
+    const activeTypes = alerts.map((alert) => alert.type);
+    await prisma.maintenanceAlert.updateMany({
+      where: { instrumentId: instrument.id, resolvedAt: null, ...(activeTypes.length ? { type: { notIn: activeTypes } } : {}) },
+      data: { resolvedAt: now },
+    });
+    for (const alert of alerts) {
+      await prisma.maintenanceAlert.upsert({
+        where: { instrumentId_type: { instrumentId: instrument.id, type: alert.type } },
+        create: {
+          userId: instrument.userId,
+          instrumentId: instrument.id,
+          type: alert.type,
+          severity: alert.severity,
+          message: alert.message.slice(0, 300),
+          detail: alert.detail as Prisma.InputJsonValue,
+          detectedAt: now,
+        },
+        update: {
+          severity: alert.severity,
+          message: alert.message.slice(0, 300),
+          detail: alert.detail as Prisma.InputJsonValue,
+          resolvedAt: null,
+        },
+      });
+    }
+    active += alerts.length;
+  }
+  // 非在用设备的未解除预警统一关闭
+  await prisma.maintenanceAlert.updateMany({
+    where: { resolvedAt: null, instrument: { status: { not: "ACTIVE" } } },
+    data: { resolvedAt: now },
+  });
+  log("info", { instruments: instruments.length, alerts: active }, "maintenance alert scan completed");
+}
+
 const worker = new Worker(
   "media-processing",
   async (job) => {
     if (job.name === "probe-media") return processMedia(String(job.data.mediaId));
     if (job.name === "cleanup-session") return cleanupSession(String(job.data.sessionId));
+    if (job.name === "cleanup-instrument") return cleanupInstrument(String(job.data.instrumentId));
     if (job.name === "export-data") return exportData(String(job.data.exportId));
     throw new Error(`Unknown job: ${job.name}`);
   },
@@ -147,11 +249,16 @@ await scanOverdueGoals().catch((error) => log("error", { err: error instanceof E
 const overdueInterval = setInterval(() => {
   void scanOverdueGoals().catch((error) => log("error", { err: error instanceof Error ? error.message : String(error) }, "overdue scan failed"));
 }, 24 * 60 * 60_000);
+await scanMaintenanceAlerts().catch((error) => log("error", { err: error instanceof Error ? error.message : String(error) }, "maintenance alert scan failed"));
+const maintenanceAlertInterval = setInterval(() => {
+  void scanMaintenanceAlerts().catch((error) => log("error", { err: error instanceof Error ? error.message : String(error) }, "maintenance alert scan failed"));
+}, 60 * 60_000);
 
 async function shutdown(signal: string) {
   log("info", { signal }, "shutting down worker");
   clearInterval(heartbeat);
   clearInterval(overdueInterval);
+  clearInterval(maintenanceAlertInterval);
   await worker.close();
   await redis.quit();
   await prisma.$disconnect();
