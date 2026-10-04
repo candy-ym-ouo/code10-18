@@ -44,6 +44,14 @@ export function formatBytes(value: number | bigint): string {
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
 }
 
+/** 服务端 Decimal 序列化为字符串，展示时去掉多余的尾零 */
+export function formatDecimal(value: string | number | null | undefined, fractionDigits = 1): string {
+  if (value == null || value === "") return "—";
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "—";
+  return num.toFixed(fractionDigits).replace(/\.0+$|(\.\d*?)0+$/, "$1");
+}
+
 export const annotationLabels = {
   RHYTHM: "节奏不稳",
   FINGERING: "指法困难",
@@ -65,4 +73,38 @@ export const goalStatusLabels = {
   ACHIEVED: "已达成",
   MISSED: "已逾期",
   CANCELLED: "已取消",
+} as const;
+
+export const instrumentStatusLabels = {
+  ACTIVE: "在用",
+  RETIRED: "已退役",
+  MERGED: "已归并",
+} as const;
+
+export const maintenanceTaskTypeLabels = {
+  STRING_CHANGE: "换弦",
+  SETUP: "调试",
+  REPAIR: "维修",
+  CLEANING: "清洁保养",
+  INSPECTION: "检查",
+  OTHER: "其他",
+} as const;
+
+export const maintenanceTaskStatusLabels = {
+  OPEN: "待处理",
+  IN_PROGRESS: "处理中",
+  DONE: "已完成",
+  CANCELLED: "已取消",
+} as const;
+
+export const maintenanceAlertTypeLabels = {
+  STRING_AGE: "弦龄",
+  ENVIRONMENT: "环境",
+  TASK_DUE: "事项到期",
+} as const;
+
+export const maintenanceAlertSeverityLabels = {
+  INFO: "提醒",
+  WARNING: "警告",
+  CRITICAL: "严重",
 } as const;

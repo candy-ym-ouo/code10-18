@@ -29,6 +29,8 @@ const envSchema = z.object({
   MAX_MEDIA_SIZE_MB: z.coerce.number().int().min(1).max(500).default(200),
   MAX_MEDIA_PER_SESSION: z.coerce.number().int().min(1).max(100).default(20),
   MAX_SESSION_TOTAL_MB: z.coerce.number().int().min(1).max(10_000).default(1024),
+  MAX_ATTACHMENT_SIZE_MB: z.coerce.number().int().min(1).max(100).default(20),
+  MAX_ATTACHMENTS_PER_TASK: z.coerce.number().int().min(1).max(50).default(10),
   UPLOAD_URL_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(900),
   PLAYBACK_URL_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(300),
   METRICS_ENABLED: booleanString,

@@ -10,6 +10,7 @@ import { prisma } from "./lib/prisma.js";
 import { deleteObject, getObjectStream, putObject } from "./lib/s3.js";
 import { generatePeaks, probeAudio } from "./lib/media.js";
 import { buildUserExport } from "./lib/export.js";
+import { scanMaintenanceAlerts } from "./lib/maintenance.js";
 
 const config = getConfig();
 const redis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
@@ -131,6 +132,7 @@ const worker = new Worker(
     if (job.name === "probe-media") return processMedia(String(job.data.mediaId));
     if (job.name === "cleanup-session") return cleanupSession(String(job.data.sessionId));
     if (job.name === "export-data") return exportData(String(job.data.exportId));
+    if (job.name === "maintenance-scan") return scanMaintenanceAlerts(job.data.userId ? String(job.data.userId) : undefined);
     throw new Error(`Unknown job: ${job.name}`);
   },
   { connection: redis, concurrency: config.WORKER_CONCURRENCY },
@@ -148,10 +150,21 @@ const overdueInterval = setInterval(() => {
   void scanOverdueGoals().catch((error) => log("error", { err: error instanceof Error ? error.message : String(error) }, "overdue scan failed"));
 }, 24 * 60 * 60_000);
 
+// 保养兜底周期扫描：与 API 触发的按用户扫描共用同一幂等实现，重复执行无副作用
+async function runMaintenanceSweep() {
+  const result = await scanMaintenanceAlerts();
+  if (result.upserted > 0 || result.resolved > 0) log("info", result, "maintenance alerts refreshed");
+}
+await runMaintenanceSweep().catch((error) => log("error", { err: error instanceof Error ? error.message : String(error) }, "maintenance sweep failed"));
+const maintenanceInterval = setInterval(() => {
+  void runMaintenanceSweep().catch((error) => log("error", { err: error instanceof Error ? error.message : String(error) }, "maintenance sweep failed"));
+}, 60 * 60_000);
+
 async function shutdown(signal: string) {
   log("info", { signal }, "shutting down worker");
   clearInterval(heartbeat);
   clearInterval(overdueInterval);
+  clearInterval(maintenanceInterval);
   await worker.close();
   await redis.quit();
   await prisma.$disconnect();

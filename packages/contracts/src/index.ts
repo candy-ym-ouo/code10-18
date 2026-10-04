@@ -38,6 +38,17 @@ export const METRIC_TYPES = [
 ] as const;
 export const EVIDENCE_REQUIREMENTS = ["NONE", "AUDIO", "SELF_REVIEW", "AUDIO_AND_SELF_REVIEW"] as const;
 export const GOAL_STATUSES = ["OPEN", "IN_PROGRESS", "ACHIEVED", "MISSED", "CANCELLED"] as const;
+export const INSTRUMENT_STATUSES = ["ACTIVE", "RETIRED", "MERGED"] as const;
+export const MAINTENANCE_TASK_TYPES = ["STRING_CHANGE", "SETUP", "REPAIR", "CLEANING", "INSPECTION", "OTHER"] as const;
+export const MAINTENANCE_TASK_STATUSES = ["OPEN", "IN_PROGRESS", "DONE", "CANCELLED"] as const;
+export const MAINTENANCE_ALERT_TYPES = ["STRING_AGE", "ENVIRONMENT", "TASK_DUE"] as const;
+export const MAINTENANCE_ALERT_SEVERITIES = ["INFO", "WARNING", "CRITICAL"] as const;
+export const ATTACHMENT_STATUSES = ["PENDING_UPLOAD", "READY", "FAILED"] as const;
+
+export const DEFAULT_STRING_LIFESPAN_DAYS = 90;
+export const DEFAULT_HUMIDITY_MIN = 40;
+export const DEFAULT_HUMIDITY_MAX = 60;
+export const TASK_DUE_SOON_DAYS = 7;
 
 const requiredText = (label: string, max: number) =>
   z.string().trim().min(1, `${label}不能为空`).max(max, `${label}不能超过 ${max} 个字符`);
@@ -201,6 +212,81 @@ export const createExportSchema = z.object({
   to: z.coerce.date().optional(),
 });
 
+export const instrumentCreateSchema = z.object({
+  name: requiredText("设备名称", 80),
+  category: requiredText("乐器类别", 60),
+  brand: optionalText(80, "品牌"),
+  model: optionalText(80, "型号"),
+  serialNo: optionalText(80, "序列号"),
+  acquiredAt: z.coerce.date().optional().nullable(),
+  stringSet: optionalText(120, "当前琴弦"),
+  stringLifespanDays: z.coerce.number().int().min(7).max(730).default(DEFAULT_STRING_LIFESPAN_DAYS),
+  humidityMin: z.coerce.number().min(0).max(100).default(DEFAULT_HUMIDITY_MIN),
+  humidityMax: z.coerce.number().min(0).max(100).default(DEFAULT_HUMIDITY_MAX),
+  notes: optionalText(2000, "备注"),
+});
+export const instrumentUpdateSchema = instrumentCreateSchema.partial().extend({
+  version: z.coerce.number().int().nonnegative(),
+});
+export const instrumentMergeSchema = z.object({
+  targetId: z.string().uuid(),
+});
+export const instrumentListQuerySchema = z.object({
+  status: z.enum([...INSTRUMENT_STATUSES, "ALL"]).default("ACTIVE"),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+export const stringChangeCreateSchema = z.object({
+  stringSet: requiredText("琴弦型号", 120),
+  changedAt: z.coerce.date(),
+  note: optionalText(1000, "备注"),
+});
+
+export const environmentReadingCreateSchema = z
+  .object({
+    recordedAt: z.coerce.date(),
+    temperatureC: z.coerce.number().min(-40).max(60).optional().nullable(),
+    humidityPct: z.coerce.number().min(0).max(100).optional().nullable(),
+    location: optionalText(120, "存放位置"),
+    note: optionalText(1000, "备注"),
+  })
+  .refine((value) => value.temperatureC != null || value.humidityPct != null, {
+    path: ["humidityPct"],
+    message: "温度和湿度至少填写一项",
+  });
+
+export const maintenanceTaskCreateSchema = z.object({
+  type: z.enum(MAINTENANCE_TASK_TYPES),
+  title: requiredText("事项标题", 160),
+  description: optionalText(3000, "详细描述"),
+  dueDate: z.coerce.date().optional().nullable(),
+  cost: z.coerce.number().min(0).max(10_000_000).optional().nullable(),
+  shop: optionalText(120, "维修店铺"),
+  dedupeKey: z.string().trim().min(1).max(80).optional().nullable(),
+});
+export const maintenanceTaskUpdateSchema = maintenanceTaskCreateSchema.partial().extend({
+  version: z.coerce.number().int().nonnegative(),
+});
+export const maintenanceTaskListQuerySchema = z.object({
+  status: z.enum(MAINTENANCE_TASK_STATUSES).optional(),
+  type: z.enum(MAINTENANCE_TASK_TYPES).optional(),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+export const attachmentUploadSchema = z.object({
+  originalName: z.string().trim().min(1).max(255),
+  mimeType: z.string().trim().min(1).max(100),
+  sizeBytes: z.coerce.bigint().positive(),
+  sha256: z.string().regex(/^[a-fA-F0-9]{64}$/, "SHA-256 摘要格式不正确"),
+});
+
+export const maintenanceAlertListQuerySchema = z.object({
+  status: z.enum(["ACTIVE", "RESOLVED", "ALL"]).default("ACTIVE"),
+  instrumentId: z.string().uuid().optional(),
+});
+
 export const idSchema = z.string().uuid();
 
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
@@ -210,6 +296,11 @@ export type GoalCategory = (typeof GOAL_CATEGORIES)[number];
 export type MetricType = (typeof METRIC_TYPES)[number];
 export type GoalStatus = (typeof GOAL_STATUSES)[number];
 export type EvidenceRequirement = (typeof EVIDENCE_REQUIREMENTS)[number];
+export type InstrumentStatus = (typeof INSTRUMENT_STATUSES)[number];
+export type MaintenanceTaskType = (typeof MAINTENANCE_TASK_TYPES)[number];
+export type MaintenanceTaskStatus = (typeof MAINTENANCE_TASK_STATUSES)[number];
+export type MaintenanceAlertType = (typeof MAINTENANCE_ALERT_TYPES)[number];
+export type MaintenanceAlertSeverity = (typeof MAINTENANCE_ALERT_SEVERITIES)[number];
 
 export interface ApiErrorBody {
   error: {
@@ -259,6 +350,102 @@ export function isGoalProgressValid(actualValue: number, targetValue: number): b
 
 export function calculateSessionDuration(mediaDurationsMs: Array<number | null | undefined>): number {
   return mediaDurationsMs.reduce<number>((total, duration) => total + (duration && duration > 0 ? duration : 0), 0);
+}
+
+const MS_PER_DAY = 86_400_000;
+
+export interface MaintenanceEvaluation {
+  level: "NONE" | MaintenanceAlertSeverity;
+  message: string | null;
+}
+
+/**
+ * 弦龄评估：以最近一次换弦时间为起点，按设备寿命阈值分级。
+ * 未记录换弦时给出 INFO，提醒补录；超过 1.5 倍寿命升级为 CRITICAL。
+ */
+export function evaluateStringAge(
+  lastChangeAt: Date | null,
+  lifespanDays: number,
+  now: Date = new Date(),
+): MaintenanceEvaluation & { ageDays: number | null } {
+  if (!lastChangeAt) {
+    return { level: "INFO", ageDays: null, message: "尚未记录换弦，建议补录换弦时间以跟踪弦龄" };
+  }
+  const ageDays = Math.floor((now.getTime() - lastChangeAt.getTime()) / MS_PER_DAY);
+  if (ageDays >= Math.ceil(lifespanDays * 1.5)) {
+    return { level: "CRITICAL", ageDays, message: `琴弦已使用 ${ageDays} 天，远超 ${lifespanDays} 天建议寿命，请尽快更换` };
+  }
+  if (ageDays >= lifespanDays) {
+    return { level: "WARNING", ageDays, message: `琴弦已使用 ${ageDays} 天，达到 ${lifespanDays} 天建议寿命，建议更换` };
+  }
+  return { level: "NONE", ageDays, message: null };
+}
+
+/** 环境评估：湿度超出设备安全区间时预警。 */
+export function evaluateEnvironmentHumidity(
+  humidityPct: number | null,
+  humidityMin: number,
+  humidityMax: number,
+): MaintenanceEvaluation {
+  if (humidityPct == null) return { level: "NONE", message: null };
+  if (humidityPct < humidityMin) {
+    return { level: "WARNING", message: `环境湿度 ${humidityPct}% 低于安全下限 ${humidityMin}%，注意加湿防裂` };
+  }
+  if (humidityPct > humidityMax) {
+    return { level: "WARNING", message: `环境湿度 ${humidityPct}% 高于安全上限 ${humidityMax}%，注意防潮` };
+  }
+  return { level: "NONE", message: null };
+}
+
+/** 维修事项到期评估：逾期 WARNING，7 天内到期 INFO。 */
+export function evaluateTaskDue(
+  dueDate: Date | null,
+  status: MaintenanceTaskStatus,
+  now: Date = new Date(),
+): MaintenanceEvaluation {
+  if (!dueDate || status === "DONE" || status === "CANCELLED") return { level: "NONE", message: null };
+  const days = Math.ceil((dueDate.getTime() - now.getTime()) / MS_PER_DAY);
+  if (days < 0) return { level: "WARNING", message: `保养事项已逾期 ${-days} 天` };
+  if (days <= TASK_DUE_SOON_DAYS) return { level: "INFO", message: `保养事项将于 ${days} 天后到期` };
+  return { level: "NONE", message: null };
+}
+
+export interface DesiredAlert {
+  dedupeKey: string;
+  type: MaintenanceAlertType;
+  severity: MaintenanceAlertSeverity;
+  message: string;
+}
+
+export interface ExistingAlert {
+  dedupeKey: string;
+  status: "ACTIVE" | "RESOLVED";
+  severity: string;
+  message: string;
+}
+
+export interface AlertTransitionPlan {
+  /** 需要写入的预警（新建、重新激活或内容变化），按 dedupeKey upsert，重复执行结果一致 */
+  upserts: DesiredAlert[];
+  /** 条件已不满足、需要解除的预警 */
+  resolveKeys: string[];
+}
+
+/**
+ * 对比期望预警与已有快照，计算最小写集合。
+ * 应用结果后再次运行会得到空的 upserts/resolveKeys，因此扫描任务可安全重跑。
+ */
+export function planAlertTransitions(existing: ExistingAlert[], desired: DesiredAlert[]): AlertTransitionPlan {
+  const existingByKey = new Map(existing.map((alert) => [alert.dedupeKey, alert]));
+  const upserts = desired.filter((item) => {
+    const current = existingByKey.get(item.dedupeKey);
+    return !current || current.status !== "ACTIVE" || current.severity !== item.severity || current.message !== item.message;
+  });
+  const desiredKeys = new Set(desired.map((item) => item.dedupeKey));
+  const resolveKeys = existing
+    .filter((alert) => alert.status === "ACTIVE" && !desiredKeys.has(alert.dedupeKey))
+    .map((alert) => alert.dedupeKey);
+  return { upserts, resolveKeys };
 }
 
 export function describeMissingReview(input: {

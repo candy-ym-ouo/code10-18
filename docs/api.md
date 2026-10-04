@@ -129,6 +129,52 @@ Refresh Cookie 路径为 `/api/v1/auth`，生产环境在 HTTPS 下自动使用 
 
 统计接口必须传 `from`、`to` 和 IANA `timezone`。
 
+## 设备保养
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/instruments` | 设备列表，含最近换弦、最近环境读数和预警计数 |
+| POST | `/instruments` | 登记设备（弦寿命天数、湿度安全区间可配置） |
+| GET | `/instruments/:id` | 设备详情，含生效中的预警 |
+| PATCH | `/instruments/:id` | 乐观锁更新；请求必须带 `version` |
+| POST | `/instruments/:id/retire` | 退役设备并解除其生效预警 |
+| POST | `/instruments/:id/reactivate` | 重新启用已退役设备 |
+| POST | `/instruments/:id/merge` | 把本设备历史归并到 `targetId` 设备 |
+| GET/POST | `/instruments/:id/string-changes` | 换弦历史 / 记录换弦 |
+| GET/POST | `/instruments/:id/environment` | 环境读数 / 记录温湿度 |
+| GET/POST | `/instruments/:id/tasks` | 保养事项列表 / 创建 |
+| GET/PATCH | `/maintenance-tasks/:id` | 事项详情 / 乐观锁更新 |
+| POST | `/maintenance-tasks/:id/complete` | 完成事项 |
+| POST | `/maintenance-tasks/:id/cancel` | 取消事项 |
+| POST | `/maintenance-tasks/:id/attachments/uploads` | 创建附件上传会话（预签名 PUT） |
+| POST | `/maintenance-attachments/:id/complete-upload` | 校验大小与 SHA-256 后置为就绪 |
+| GET | `/maintenance-attachments/:id/download-url` | 短期私有下载地址 |
+| DELETE | `/maintenance-attachments/:id` | 先清理对象存储，再删除记录 |
+| GET | `/maintenance/alerts` | 预警列表（`status=ACTIVE/RESOLVED/ALL`） |
+| POST | `/maintenance/alerts/:id/resolve` | 手动解除预警 |
+| POST | `/maintenance/scan` | 手动触发预警扫描（幂等） |
+
+### 归并语义
+
+`POST /instruments/:id/merge` 在事务中把来源设备的换弦、环境和维修历史转移到目标设备：
+
+- 与目标设备完全重复的记录（同时间同型号换弦、同时间环境读数、同 `dedupeKey` 事项）会被去除，不产生重复历史。
+- 被去除事项关联的附件对象会先在对象存储清理，再删除数据库行。
+- 来源设备置为 `MERGED` 并记录 `mergedIntoId`；重复调用同一归并返回 `alreadyMerged: true`，可安全重跑。
+
+### 幂等与重跑
+
+- 记录换弦：唯一约束 `(instrumentId, changedAt, stringSet)`，重复提交返回既有记录和 `deduplicated: true`。
+- 记录环境：同一设备同一 `recordedAt` 只保留一条，重复提交覆盖更新。
+- 创建事项：客户端可携带 `dedupeKey`，重复提交返回既有事项。
+- 预警扫描：Worker 周期执行，也可由写操作或 `POST /maintenance/scan` 触发；扫描按 `dedupeKey` upsert 并解除失效预警，重复执行结果一致。
+
+### 预警规则
+
+- `STRING_AGE`：未记录换弦（INFO）、弦龄达到寿命阈值（WARNING）、达到 1.5 倍阈值（CRITICAL）。
+- `ENVIRONMENT`：最新环境读数湿度超出设备安全区间（WARNING）。
+- `TASK_DUE`：事项逾期（WARNING）或 7 天内到期（INFO）。
+
 ## 健康检查
 
 | 路径 | 说明 |

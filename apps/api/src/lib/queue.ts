@@ -53,6 +53,25 @@ export async function enqueueExport(exportId: string): Promise<void> {
   );
 }
 
+/**
+ * 触发指定用户的保养预警扫描。
+ * jobId 按用户固定：排队或执行中的重复触发会被 BullMQ 去重；
+ * 完成后立即移除任务记录，后续触发可再次入队，任务可安全重跑。
+ */
+export async function enqueueMaintenanceScan(userId: string): Promise<void> {
+  await getMediaQueue().add(
+    "maintenance-scan",
+    { userId },
+    {
+      jobId: `maintenance-scan:${userId}`,
+      attempts: 3,
+      backoff: { type: "exponential", delay: 5000 },
+      removeOnComplete: true,
+      removeOnFail: 500,
+    },
+  );
+}
+
 export async function closeQueue(): Promise<void> {
   if (queue) {
     await queue.close();
